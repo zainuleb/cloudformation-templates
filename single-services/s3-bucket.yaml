@@ -1,9 +1,13 @@
 AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  BucketName:
+    Description: The name of the S3 bucket
+    Type: String
 Resources:
   TasksAPIBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: bucket-name
+      BucketName: !Ref BucketName
       PublicAccessBlockConfiguration:
         BlockPublicAcls: false
       OwnershipControls:
@@ -12,3 +16,13 @@ Resources:
       WebsiteConfiguration:
         IndexDocument: index.html
         ErrorDocument: error.html
+Outputs:
+  BucketName:
+    Description: The name of the S3 bucket
+    Value: !Ref TasksAPIBucket
+  WebsiteURL:
+    Description: The URL of the website hosted in the S3 bucket
+    Value: !GetAtt TasksAPIBucket.WebsiteURL
+  DomainName:
+    Description: The domain of the website hosted in the S3 bucket
+    Value: !GetAtt TasksAPIBucket.DomainName
