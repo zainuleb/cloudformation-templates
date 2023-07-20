@@ -1,0 +1,184 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Description: "The name of the S3 bucket"
+
+  GithubOwner:
+    Type: String
+    Description: "The owner of the GitHub repo"
+
+  GithubRepo:
+    Type: String
+    Description: "The GitHub repo name"
+
+  GithubToken:
+    Type: String
+    Description: "The GitHub token"
+    NoEcho: true
+
+Resources:
+  S3Bucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Ref S3BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: ObjectWriter
+      WebsiteConfiguration:
+        IndexDocument: "index.html"
+        ErrorDocument: "error.html"
+  S3BucketPolicy:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - s3:GetObject
+            Resource:
+              - !Sub "arn:aws:s3:::${S3BucketName}/*"
+
+  CodeBuildRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: "codebuild.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: CodeBuildServicePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Resource: "*"
+                Action:
+                  - "s3:PutObject"
+                  - "s3:GetObject"
+                  - "s3:DeleteObject"
+                  - "s3:ListBucket"
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                  - "codebuild:BatchGetBuilds"
+                  - "codebuild:StartBuild"
+
+  CodePipelineRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: "codepipeline.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: CodePipelinePolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: "*"
+                Resource: "*"
+
+  CodeBuildProject:
+    Type: "AWS::CodeBuild::Project"
+    Properties:
+      Name: !Sub ${AWS::StackName}-CodeBuild
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Type: LINUX_CONTAINER
+        Image: "aws/codebuild/standard:5.0"
+        EnvironmentVariables:
+          - Name: S3BucketName
+            Value: !Ref S3BucketName
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - echo Installing source code dependencies...
+                - n 14
+                - npm install
+                - npx browserslist@latest --update-db
+            build:
+              commands:
+                - echo Build started on `date`
+                - export $(cat /tmp/env.json | xargs)
+                - npm run build
+                - aws s3 sync build/ s3://${S3BucketName} --delete
+          artifacts:
+            files:
+              - '**/*'
+            base-directory: build
+            discard-paths: yes
+
+  CodePipeline:
+    Type: "AWS::CodePipeline::Pipeline"
+    Properties:
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: codepipeline-eu-west-2-975428383503
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: 1
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                Owner: !Ref GithubOwner
+                Repo: !Ref GithubRepo
+                Branch: master
+                OAuthToken: !Ref GithubToken
+        - Name: Build
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+        - Name: Deploy
+          Actions:
+            - Name: DeployAction
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: S3
+              InputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                BucketName: !Ref S3BucketName
+                ObjectKey: "index.html"
+                Extract: "true"
+
+Outputs:
+  S3BucketURL:
+    Description: "S3 Bucket URL"
+    Value: !Sub "http://${S3BucketName}.s3-website.${AWS::Region}.amazonaws.com"
